@@ -14,7 +14,7 @@ def compute_co_similar_network(db_path: str) -> nx.Graph:
     """
     Load the multimodal co-similar tweet network from the embedding database.
     """
-    from your_module import compute_co_similar_tweet_multimodal, load_networkx_graph
+    # from your_module import compute_co_similar_tweet_multimodal, load_networkx_graph
     
     compute_co_similar_tweet_multimodal(
         db_path,
@@ -48,7 +48,7 @@ def apply_leiden_community_detection(graph: nx.Graph, resolution: float = 0.1) -
     return {g_ig.vs[i]['_nx_name']: membership for i, membership in enumerate(partition.membership)}
 
 
-def filter_graph_by_community(graph: nx.Graph, community_mapping: dict, min_size: int = 3) -> nx.Graph:
+def filter_graph_by_community(graph: nx.Graph, community_mapping: dict, min_size: int = 5) -> nx.Graph:
     """
     Filter the graph to include only communities with more than min_size nodes.
     """
@@ -68,117 +68,118 @@ def filter_graph_by_community(graph: nx.Graph, community_mapping: dict, min_size
     return filtered_graph
 
 
-def find_image_clusters(image_names: list, corpus_embeddings: list, threshold: float = 0.9, min_size: int = 2) -> tuple:
+import numpy as np
+import pandas as pd
+import networkx as nx
+from sentence_transformers import util
+from collections import Counter
+import itertools
+
+def find_embed_clusters(keys: list, corpus_embeddings: list, threshold: float = 0.9, embed_cluster_min_size: int = 2) -> tuple:
     """
-    Perform community detection on image embeddings.
+    Perform community detection on embeddings, using embedding hashes as keys.
     """
     corpus_embeddings = np.array(corpus_embeddings)
     clusters = util.community_detection(
         corpus_embeddings,
         threshold=threshold,
-        min_community_size=min_size,
+        min_community_size=embed_cluster_min_size,
         batch_size=1024,
         show_progress_bar=False
     )
-    
-    image_labels = [0] * len(image_names)
+
+    labels = [0] * len(keys)
     for cluster_id, cluster in enumerate(clusters, start=1):
         for idx in cluster:
-            image_labels[idx] = cluster_id
-    
-    cluster_dict = dict(zip(image_names, image_labels))
-    
+            labels[idx] = cluster_id
+
+    cluster_dict = dict(zip(keys, labels))
+
     # Identify images in large clusters (>5)
     cluster_count = Counter(cluster_dict.values())
     large_clusters = {cid for cid, cnt in cluster_count.items() if cnt > 5}
-    images_in_large_clusters = [img for img, cid in cluster_dict.items() if cid in large_clusters]
-    
-    return cluster_dict, images_in_large_clusters
+    embed_in_large_clusters = [key for key, cid in cluster_dict.items() if cid in large_clusters]
+
+    return cluster_dict, embed_in_large_clusters
 
 
-def build_image_network(network: nx.Graph, tweet_df: pd.DataFrame, min_size: int = 5) -> nx.Graph:
+def build_content_network(network: nx.Graph, tweet_df: pd.DataFrame, user_community_min_size: int = 5, embed_cluster_min_size: int = 3) -> nx.Graph:
     """
-    Build an image-based network from tweet coordination edges.
+    Build an content-based network from tweet coordination edges, using hashes of embeddings as unique keys.
     """
     edges_df = pd.DataFrame(network.edges(data=True), columns=['Source', 'Target', 'Attributes'])
     edges_df = pd.concat([edges_df, pd.json_normalize(edges_df['Attributes'])], axis=1).drop(columns='Attributes')
-    
+
     def parse_edge_pairs(pairs: str) -> list:
         return [list(map(int, p.split('-'))) for p in pairs.split(',')]
-    
+
     edges_df['edges_message'] = edges_df['edges_message'].apply(parse_edge_pairs)
     edges_df = edges_df.explode('edges_message')
     edge_pairs = edges_df['edges_message'].tolist()
-    
-    image_ids = list(set(itertools.chain(*edge_pairs)))
-    image_df = tweet_df[tweet_df['id'].isin(image_ids)].drop_duplicates(subset='id')
-    image_dict = image_df.set_index('id')['image_name'].to_dict()
-    author_dict = image_df.set_index('id')['username'].to_dict()
-    
-    # Cluster images
-    embeddings = image_df['image_embed'].tolist()
-    cluster_dict, large_images = find_image_clusters(image_df['image_name'].tolist(), embeddings)
-    
-    # Replace IDs with image names
-    image_pairs = [(image_dict[pair[0]], image_dict[pair[1]]) for pair in edge_pairs]
-    pair_counts = Counter(image_pairs)
-    
+
+    tweet_ids = list(set(itertools.chain(*edge_pairs)))
+    content_df = tweet_df[tweet_df['id'].isin(tweet_ids)].drop_duplicates(subset='id')
+
+    # Compute hash keys for image embeddings
+    content_df['combine_embed'] = content_df.apply(lambda row: np.concatenate([row['text_emb_from_multi'], row['image_embed']]), axis=1)
+    content_df['embed_key'] = content_df['combine_embed'].apply(lambda emb: hash(tuple(emb)))
+
+    # Map: message ID -> image_key
+    id_to_embed_key = content_df.set_index('id')['embed_key'].to_dict()
+    author_dict = content_df.set_index('id')['username'].to_dict()
+    embeddings = content_df['combine_embed'].tolist()
+    embed_keys = content_df['embed_key'].tolist()
+
+    # Cluster images using the hashed keys
+    cluster_dict, large_embed = find_embed_clusters(embed_keys, embeddings, embed_cluster_min_size)
+
+    # Use image_keys instead of IDs for edges
+    embed_pairs = [(id_to_embed_key[pair[0]], id_to_embed_key[pair[1]]) for pair in edge_pairs]
+    pair_counts = Counter(embed_pairs)
+
     g_content = nx.Graph()
-    for (src, tgt), weight in pair_counts.items():
-        g_content.add_edge(src, tgt, weight=weight)
-    
-    for img_id, img_name in image_dict.items():
-        if img_name in g_content.nodes:
-            linked_ids = [str(iid) for iid, name in image_dict.items() if name == img_name]
-            usernames = [author_dict[int(iid)] for iid in linked_ids]
-            attrs = {
-                'message_id': ','.join(linked_ids),
-                'usernames': ','.join(usernames),
-                'user_count': len(usernames),
-                'image_cluster_idx': cluster_dict[img_name]
-            }
-            g_content.nodes[img_name].update(attrs)
+    for (src_key, tgt_key), weight in pair_counts.items():
+        g_content.add_edge(src_key, tgt_key, weight=weight)
 
-    
-    def find_large_connected_components(graph, min_size=5):
-        # Find all strongly connected components
+    # Aggregate attributes for each image node
+    for embed_key in set(embed_keys):
+        linked_ids = [str(msg_id) for msg_id, key in id_to_embed_key.items() if key == embed_key]
+        usernames = [author_dict[int(msg_id)] for msg_id in linked_ids]
+        attrs = {
+            'message_id': ','.join(linked_ids),
+            'usernames': ','.join(usernames),
+            'user_count': len(usernames),
+            'embed_cluster_idx': cluster_dict.get(embed_key, 0)
+        }
+        g_content.nodes[embed_key].update(attrs)
+
+    # Identify large connected components
+    def find_large_connected_components(graph, user_community_min_size):
         connected_components = list(nx.connected_components(graph))
-
-        # Filter components based on size
-        large_components = [component for component in connected_components if len(component) > min_size]
-        nodes_in_large_comp = [node for component in large_components for node in component]
-
-
+        large_components = [c for c in connected_components if len(c) > user_community_min_size]
+        nodes_in_large_comp = [node for comp in large_components for node in comp]
         return large_components, nodes_in_large_comp
 
-    large_components, nodes_in_large_comp = find_large_connected_components(g_content, min_size=min_size)
+    large_components, nodes_in_large_comp = find_large_connected_components(g_content, user_community_min_size=user_community_min_size)
 
-
-
-
-    # # initilize a network where node is image and edge is coordination
+    # Build final filtered graph
     g_content_big = nx.Graph()
+    for u, v, data in g_content.edges(data=True):
+        if u in nodes_in_large_comp and v in nodes_in_large_comp:
+            g_content_big.add_edge(u, v, **data)
 
-    image_name_pairs = set(image_name_pairs)
-
-    nodes_in_large_comp = nodes_in_large_comp + big_image_lst
-
-    for pair in image_name_pairs:
-        if (pair[0] in nodes_in_large_comp) & (pair[1] in nodes_in_large_comp):
-            g_content_big.add_edge(pair[0], pair[1], weight = image_pairs_count[pair])
-
-    for id, img_name in image_dict.items():
-        if img_name in g_content_big.nodes:
-          message_id_list_image = [str(key) for key, value in image_dict.items() if value == img_name]
-          attrs = {'message_id' : ','.join(message_id_list_image)}
-          user_names_image = [author_id_dict[int(m_id)] for m_id in message_id_list_image]
-          attrs['usernames'] = ','.join(user_names_image)
-          attrs['user_count'] = len(user_names_image)
-          attrs['image_cluster_idx'] = image_cluset_dict[img_name]
-          g_content_big.add_node(img_name, **attrs)
+    for embed_key in g_content_big.nodes:
+        linked_ids = [str(msg_id) for msg_id, key in id_to_embed_key.items() if key == embed_key]
+        usernames = [author_dict[int(msg_id)] for msg_id in linked_ids]
+        attrs = {
+            'message_id': ','.join(linked_ids),
+            'usernames': ','.join(usernames),
+            'user_count': len(usernames),
+            'embed_cluster_idx': cluster_dict.get(embed_key, 0)
+        }
+        g_content_big.nodes[embed_key].update(attrs)
 
     return g_content, g_content_big
-
 
 
 
@@ -207,10 +208,10 @@ def build_fully_connected_user_network(graph: nx.Graph) -> Tuple[List[nx.Graph],
 
     # Group users by image cluster
     nodes_group = []
-    for cluster in nodes_df['image_cluster_idx'].unique():
-        users_in_cluster = nodes_df[nodes_df['image_cluster_idx'] == cluster]['usernames'].tolist()
+    for cluster in nodes_df['embed_cluster_idx'].unique():
+        users_in_cluster = nodes_df[nodes_df['embed_cluster_idx'] == cluster]['usernames'].tolist()
         users_flat = flatten_list(users_in_cluster)
-        print(f"Users in cluster {cluster}: {users_flat}")
+        # print(f"Users in cluster {cluster}: {users_flat}")
         nodes_group.append(users_flat)
 
     # Create fully connected subgraphs for each group and combine them
@@ -272,12 +273,14 @@ def compose_directed_networks(network_a, network_b):
 
 
 def compute_TiCNet():
-    embedding_db_path = '/content/local/database.db'
-    graph_output_path = '/content/local/TiCNet.graphml'
-    dataframe_path = '/content/local/toy_dataset_for_test.csv'
+    embedding_db_path = '/content/toy_dataset_for_test.db'
+    graph_output_path = '/content/TiCNet.graphml'
+    dataframe_path = '/content/toy_dataset_for_test.csv'
+
+    print('==='*10)
 
     start = datetime.now()
-    print("Starting multimodal network computation...")
+    print("Starting multimodal TiCNet computation...")
 
     g_conetwork = compute_co_similar_network(embedding_db_path)
     print(f"Original network: {g_conetwork.number_of_nodes()} nodes, {g_conetwork.number_of_edges()} edges")
@@ -285,18 +288,21 @@ def compute_TiCNet():
     community_mapping = apply_leiden_community_detection(g_conetwork)
     nx.set_node_attributes(g_conetwork, community_mapping, 'community')
 
-    filtered_graph = filter_graph_by_community(g_conetwork, community_mapping, min_size=3)
-    print(f"Filtered graph: {filtered_graph.number_of_nodes()} nodes, {filtered_graph.number_of_edges()} edges")
+    filtered_user_graph = filter_graph_by_community(g_conetwork, community_mapping, min_size=3)
+    print(f"Filtered user graph: {filtered_user_graph.number_of_nodes()} nodes, {filtered_user_graph.number_of_edges()} edges")
 
-    dataset_embed = pd.read_csv(dataframe_path)
-    g_content, g_content_big = image_network_from_conetwork(filtered_graph, dataset_embed)
+    dataset_embed = load_and_prepare_dataframe(dataframe_path)
+
+    g_content, g_content_big = build_content_network(filtered_user_graph, dataset_embed)
+
+    print(f"Filtered content graph: {g_content_big.number_of_nodes()} nodes, {g_content_big.number_of_edges()} edges")
 
     new_user_network = build_fully_connected_user_network(g_content_big)
 
-    g_conetwork_username = convert_id_to_username_network(filtered_graph, 'undirect')
+    g_conetwork_username = convert_id_to_username_network(filtered_user_graph, 'undirect')
     new_user_network = compose_directed_networks(g_conetwork_username, new_user_network)
 
-    print(f"LiCNet: {new_user_network.number_of_nodes()} nodes, {new_user_network.number_of_edges()} edges")
+    print(f"TiCNet: {new_user_network.number_of_nodes()} nodes, {new_user_network.number_of_edges()} edges")
 
     print("Saving filtered graph...")
     nx.write_graphml(new_user_network, graph_output_path)
@@ -304,14 +310,18 @@ def compute_TiCNet():
     end = datetime.now()
     print(f"Processing completed in {(end - start).total_seconds() / 60:.2f} minutes")
 
+    print('==='*10)
+
 
 def compute_LiCNet():
+
+    print('==='*10)
     
-    embedding_database_path = '/content/local/database.db'
-    graph_output_path = '/content/local/LiCNet.graphml'
+    embedding_database_path = '/content/toy_dataset_for_test.db'
+    graph_output_path = '/content/LiCNet.graphml'
 
     start = datetime.now()
-    print("Starting multimodal network computation...")
+    print("Starting multimodal LiCNet computation...")
 
     compute_co_similar_tweet_multimodal(
         embedding_database_path,
@@ -331,12 +341,21 @@ def compute_LiCNet():
 
     print(f"LiCNet: {g_conetwork.number_of_nodes()} nodes, {g_conetwork.number_of_edges()} edges")
 
-
     nx.write_graphml(g_conetwork, graph_output_path)
 
     end = datetime.now()
     print(f"Processing completed in {(end - start).total_seconds() / 60:.2f} minutes")
 
+    print('==='*10)
+
+
+
+def main():
+
+    compute_TiCNet()
+    compute_LiCNet()
+
 
 if __name__ == '__main__':
     main()
+
