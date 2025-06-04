@@ -273,9 +273,9 @@ def compose_directed_networks(network_a, network_b):
 
 
 def compute_TiCNet():
-    embedding_db_path = '/content/toy_dataset_for_test.db'
-    graph_output_path = '/content/TiCNet.graphml'
-    dataframe_path = '/content/toy_dataset_for_test.csv'
+    embedding_db_path = './toy_dataset_for_test.db'
+    graph_output_path = './TiCNet.graphml'
+    dataframe_path = './toy_dataset_for_test.csv'
 
     print('==='*10)
 
@@ -313,12 +313,13 @@ def compute_TiCNet():
     print('==='*10)
 
 
+
 def compute_LiCNet():
 
     print('==='*10)
     
-    embedding_database_path = '/content/toy_dataset_for_test.db'
-    graph_output_path = '/content/LiCNet.graphml'
+    embedding_database_path = './toy_dataset_for_test.db'
+    graph_output_path = './LiCNet.graphml'
 
     start = datetime.now()
     print("Starting multimodal LiCNet computation...")

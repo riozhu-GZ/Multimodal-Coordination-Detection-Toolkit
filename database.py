@@ -1,7 +1,4 @@
-# !pip install coordination-network-toolkit
-# !pip install python-louvain
-# !pip install leidenalg igraph python-igraph
-# !pip install -U sentence-transformers
+
 
 COMMAND_TABLE = {
     "co_retweet": "co_retweet_network",
@@ -299,8 +296,8 @@ def load_and_prepare_dataframe(csv_path: str) -> pd.DataFrame:
 
 
 def main():
-    csv_path = 'toy_dataset_for_test.csv'
-    db_path = 'toy_dataset_for_test.db'
+    csv_path = './dataset/toy_dataset_for_test.csv'
+    db_path = './dataset/toy_dataset_for_test.db'
 
     print("Initialising multimodal database...")
     initialise_multimodal_db(db_path)

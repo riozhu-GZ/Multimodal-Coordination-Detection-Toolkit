@@ -8,6 +8,10 @@ from concurrent.futures import (
 import math
 from typing import Callable, Iterable, List
 
+import numpy as np
+import sys
+import re
+from typing import Optional
 
 
 
@@ -122,16 +126,6 @@ def parallise_query_by_user_id(
     return completed
 
 
-
-
-
-import numpy as np
-import sys
-import re
-
-
-import numpy as np
-from typing import Optional
 
 
 def cos_similarity(vec1: np.ndarray, vec2: np.ndarray) -> float:
