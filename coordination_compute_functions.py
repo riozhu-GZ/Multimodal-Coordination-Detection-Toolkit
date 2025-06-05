@@ -62,6 +62,7 @@ def _run_query(
     with lock, db:
         db.execute(f"insert into {target_table} select * from local_network")
 
+
 def parallise_query_by_user_id(
     db_path,
     target_table,
