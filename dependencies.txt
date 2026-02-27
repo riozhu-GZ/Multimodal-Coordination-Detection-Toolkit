@@ -1,5 +1,0 @@
-# dependencies
-# !pip install coordination-network-toolkit
-# !pip install python-louvain
-# !pip install leidenalg igraph python-igraph
-# !pip install -U sentence-transformers
