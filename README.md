@@ -16,10 +16,114 @@ Coordinated inauthentic behaviour (CIB) refers to groups of social media account
 
 Two network types are supported:
 
-| Network | Description | Use case |
+| Network | Full name | Strictness | Best for |
+|---|---|---|---|
+| **TiCNet** | Tweet-image Coordination Network | Strict — multi-stage filtering | Exposing tightly organised, high-confidence coordination groups |
+| **LiCNet** | Loose image Coordination Network | Lenient — single-stage edge weight | Broad exploratory detection across large, noisy datasets |
+
+---
+
+## Network Types
+
+### TiCNet — Tweet-image Coordination Network
+
+**Rationale.** Genuine coordinated campaigns often involve accounts that repeatedly share near-identical multimodal content (same caption + same image, or slight variations) within tight time windows. A single co-similar post pair can occur by chance; TiCNet is designed to surface only the most credible coordination by requiring evidence across *multiple layers* simultaneously — temporal proximity, semantic similarity, community membership, and content-cluster co-membership.
+
+**Design goals:**
+- High precision: minimise false positives by requiring convergent evidence
+- Community structure: detected nodes should belong to dense, internally-connected groups
+- Content traceability: each edge can be traced back to the specific post pairs that caused it
+
+**Pipeline:**
+
+```
+1. Co-similar detection
+   For every pair of accounts (u1, u2): count posts within time_window that
+   exceed text_threshold OR img_threshold. Edge weight = number of such pairs.
+
+2. Leiden community detection (CPM variant, weighted)
+   Partition the co-similar user graph into communities. The CPM objective
+   finds groups that are more densely connected internally than expected.
+
+3. Community filtering
+   Discard any community smaller than min_community_size. This removes
+   isolated account pairs and small noise clusters.
+
+4. Content network construction
+   For each post-pair edge (p1, p2) in the filtered graph:
+     - Represent p1 and p2 by the hash of their combined (text + image) embedding
+     - Build a content graph where nodes are unique content identities and
+       edges are co-post links
+     - Cluster content nodes by embedding similarity (cosine ≥ 0.9)
+     - Retain only large connected components (removes singleton content)
+
+5. User-clique reconstruction
+   For each content cluster, connect all accounts that contributed content
+   in that cluster as a fully-connected clique. This captures the full
+   group of accounts amplifying the same multimodal content.
+
+6. Composition
+   Intersect the directed co-similar edges (step 1) with the user set from
+   step 5. Only accounts present in both layers appear in the final graph.
+   The result preserves directionality (who copied whom first) while
+   restricting to accounts confirmed by content clustering.
+```
+
+**Output graph:**
+- Nodes = accounts; edges = directed coordination links
+- Node attributes include `community` (Leiden group ID) and linked post IDs
+- Edge `weight` = number of co-similar post pairs; `edges_message` = traceable post-pair list
+
+**Key parameters:** `time_window`, `text_threshold`, `img_threshold`, `min_edge_weight`, `min_community_size`
+
+**When to use:** When you need high-confidence results for downstream analysis, reporting, or publication. Expect a smaller, denser graph with fewer false positives.
+
+---
+
+### LiCNet — Loose image Coordination Network
+
+**Rationale.** Not all coordinated behaviour is tight or organised. Loosely affiliated actors may share similar images or text across a broader time span without belonging to a single coherent campaign. LiCNet applies a single filtering criterion — edge weight — over a wider time window, trading precision for recall.
+
+**Design goals:**
+- High recall: surface any pair of accounts with repeated multimodal similarity, even loosely timed
+- Simplicity: single-pass, no community detection, directly interpretable
+- Scalability: faster than TiCNet; suitable as a first-pass filter before deeper analysis
+
+**Pipeline:**
+
+```
+1. Co-similar detection (same as TiCNet step 1, but wider window)
+   Default: time_window = 3600 s (1 hour), min_edge_weight = 5
+   An edge (u1, u2) exists if u1 and u2 each have ≥ 5 post pairs that
+   exceed the similarity threshold within any 1-hour window.
+
+2. Load and export
+   The co-similar graph is loaded directly as the output network.
+   No community detection, content network, or clique reconstruction.
+```
+
+**Output graph:**
+- Nodes = accounts; edges = directed coordination links
+- Edge `weight` = number of co-similar post pairs
+- Node attributes: `username`, linked post IDs
+
+**Key parameters:** `time_window` (uses `LICNET_TIME_WINDOW = 3600`), `text_threshold`, `img_threshold`, `min_edge_weight` (uses `LICNET_MIN_EDGE_WEIGHT = 5`)
+
+**When to use:** As a fast first-pass scan, when recall matters more than precision, or when you want to study the full landscape of potential coordination before applying stricter filters.
+
+---
+
+### Choosing between TiCNet and LiCNet
+
+| Question | TiCNet | LiCNet |
 |---|---|---|
-| **TiCNet** | Tweet-image Coordination Network. Strict: applies Leiden community detection, builds a content-level network indexed by embedding clusters, and composes it back into a user-level network. | Identifying tightly coordinated groups sharing near-identical multimodal content. |
-| **LiCNet** | Loose image Coordination Network. Simpler: direct edges between accounts whose post pairs exceed a weight threshold within a time window. | Broader detection of loosely coordinated behaviour. |
+| Do you need traceable evidence per edge? | Yes | No |
+| Are you working with a noisy or organic dataset? | Better (stricter) | Noisier results |
+| Do you want to identify specific campaign groups? | Yes — communities | No — pairwise only |
+| Is speed a priority? | Slower (multi-stage) | Faster (single-stage) |
+| Do you want to explore broadly first? | No | Yes |
+
+Use `network_type="both"` to compute both in one run and compare.
 
 ---
 
@@ -243,15 +347,19 @@ This step is parallelised across user ID batches via `multiprocessing`.
 
 ### Step 4a — TiCNet construction
 
+See [TiCNet — Tweet-image Coordination Network](#ticnet--tweet-image-coordination-network) for a full description. In brief:
+
 1. **Leiden community detection** on the co-similar user graph (CPM variant, weighted edges).
-2. **Filter small communities** (keep communities > `min_community_size`).
-3. **Content network**: index content by hash of combined embedding; cluster by embedding similarity; retain large connected components.
-4. **User clique network**: for each content cluster, form a fully-connected subgraph of contributing users.
-5. **Compose**: intersect the directed edges from step 2 with the user set from step 4.
+2. **Filter small communities** (keep communities with > `min_community_size` nodes).
+3. **Content network**: index posts by hash of concatenated (text + image) embedding; cluster similar content; retain large connected components.
+4. **User clique network**: for each content cluster, form a fully-connected subgraph of all contributing accounts.
+5. **Compose**: intersect the directed co-similar edges (step 3) with the user set from step 4.
 
 ### Step 4b — LiCNet construction
 
-Directly loads the co-similar user graph (step 3 output) with a wider time window (`LICNET_TIME_WINDOW = 3600s`) and higher minimum edge weight (`LICNET_MIN_EDGE_WEIGHT = 5`). No community detection or content network step.
+See [LiCNet — Loose image Coordination Network](#licnet--loose-image-coordination-network) for a full description. In brief:
+
+Loads the co-similar user graph (step 3 output) directly using a wider time window (`LICNET_TIME_WINDOW = 3600 s`) and higher minimum edge weight (`LICNET_MIN_EDGE_WEIGHT = 5`). No community detection or content network step — the edge-filtered graph is the output.
 
 ---
 
