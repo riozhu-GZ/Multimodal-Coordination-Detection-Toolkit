@@ -82,20 +82,47 @@ Two network types are supported:
 
 ### LiCNet — Loose image Coordination Network
 
-**Rationale.** Not all coordinated behaviour is tight or organised. Loosely affiliated actors may share similar images or text across a broader time span without belonging to a single coherent campaign. LiCNet applies a single filtering criterion — edge weight — over a wider time window, trading precision for recall.
+**Rationale.** Taking an approach analogous to the [Coordination Network Toolkit](https://github.com/QUT-Digital-Observatory/coordination-network-toolkit) (Graham et al., 2024), LiCNet detects repeated pairwise multimodal similarity across a broad time window. Unlike TiCNet, it does not require community structure; instead, it surfaces all account pairs that share sufficiently similar content at least `min_edge_weight` times within the observation period.
+
+Crucially, within LiCNet's 3,600-second (1-hour) window, two qualitatively different coordination patterns are captured simultaneously:
+
+| Pattern | Time gap between posts | Interpretation |
+|---|---|---|
+| **CIB** (Coordinated Inauthentic Behaviour) | < 300 s | Synchronous, tightly timed posting — characteristic of bot-driven or scripted campaigns (Graham et al., 2024) |
+| **Asynchronous coordination** | 300 s – 3,600 s | Dispersed but still intentional amplification — characteristic of loosely organised human networks |
+
+Both patterns are identified by the same mechanism (repeated pairwise similarity), but the temporal range distinguishes their nature. The `asy_min_time_window` parameter makes this distinction explicit in the API:
+
+```python
+# Detect only synchronous CIB (< 300 s window)
+compute_co_similar_tweet_multimodal(db, time_window=300, asy_min_time_window=0, ...)
+
+# Detect only asynchronous coordination (300–3600 s window)
+compute_co_similar_tweet_multimodal(db, time_window=3600, asy_min_time_window=300, ...)
+
+# LiCNet default — captures both patterns together (0–3600 s)
+compute_co_similar_tweet_multimodal(db, time_window=3600, asy_min_time_window=0, ...)
+```
 
 **Design goals:**
-- High recall: surface any pair of accounts with repeated multimodal similarity, even loosely timed
-- Simplicity: single-pass, no community detection, directly interpretable
-- Scalability: faster than TiCNet; suitable as a first-pass filter before deeper analysis
+- Broad coverage: capture both synchronous CIB and asynchronous coordination in a single pass
+- Simplicity: single filtering criterion (edge weight), directly interpretable
+- Scalability: faster than TiCNet; suitable as a first-pass survey before deeper analysis
 
 **Pipeline:**
 
 ```
-1. Co-similar detection (same as TiCNet step 1, but wider window)
-   Default: time_window = 3600 s (1 hour), min_edge_weight = 5
-   An edge (u1, u2) exists if u1 and u2 each have ≥ 5 post pairs that
-   exceed the similarity threshold within any 1-hour window.
+1. Co-similar detection
+   Default: time_window = 3,600 s, asy_min_time_window = 0, min_edge_weight = 5
+   An edge (u1, u2) exists if there are ≥ 5 post pairs (p1 by u1, p2 by u2)
+   where:
+     - 0 s ≤ |timestamp(p2) - timestamp(p1)| ≤ 3,600 s
+     - cosine_sim(text_p1, text_p2) ≥ text_threshold  OR
+       cosine_sim(image_p1, image_p2) ≥ img_threshold
+
+   Within the resulting edge set:
+     • Pairs with Δt < 300 s   → likely CIB (synchronous)
+     • Pairs with Δt 300–3600 s → likely asynchronous coordination
 
 2. Load and export
    The co-similar graph is loaded directly as the output network.
@@ -104,12 +131,22 @@ Two network types are supported:
 
 **Output graph:**
 - Nodes = accounts; edges = directed coordination links
-- Edge `weight` = number of co-similar post pairs
+- Edge `weight` = total number of co-similar post pairs (spanning both CIB and asynchronous sub-ranges)
 - Node attributes: `username`, linked post IDs
 
-**Key parameters:** `time_window` (uses `LICNET_TIME_WINDOW = 3600`), `text_threshold`, `img_threshold`, `min_edge_weight` (uses `LICNET_MIN_EDGE_WEIGHT = 5`)
+**Key parameters:**
 
-**When to use:** As a fast first-pass scan, when recall matters more than precision, or when you want to study the full landscape of potential coordination before applying stricter filters.
+| Parameter | Default | Effect |
+|---|---|---|
+| `time_window` | 3,600 s | Upper bound on Δt between co-similar posts |
+| `asy_min_time_window` | 0 s | Lower bound on Δt — set to 300 to isolate asynchronous patterns only |
+| `text_threshold` | 0.9 | Cosine similarity threshold for text |
+| `img_threshold` | 0.8 | Cosine similarity threshold for images |
+| `min_edge_weight` | 5 | Minimum co-similar pairs to form an edge |
+
+**When to use:** As a broad first-pass scan across a dataset, when you want to detect both tight CIB and looser asynchronous coordination without applying community-level constraints.
+
+> **Reference:** Graham, T., Bruns, A., Zhu, G., & Campbell, H. (2024). *Coordination Network Toolkit*. Queensland University of Technology. [github.com/QUT-Digital-Observatory/coordination-network-toolkit](https://github.com/QUT-Digital-Observatory/coordination-network-toolkit)
 
 ---
 
@@ -117,11 +154,12 @@ Two network types are supported:
 
 | Question | TiCNet | LiCNet |
 |---|---|---|
-| Do you need traceable evidence per edge? | Yes | No |
-| Are you working with a noisy or organic dataset? | Better (stricter) | Noisier results |
-| Do you want to identify specific campaign groups? | Yes — communities | No — pairwise only |
+| Do you need high-confidence, community-validated results? | Yes | No |
+| Do you want to detect both CIB and asynchronous coordination? | Partially (via content clusters) | Yes — both in one pass |
+| Do you need traceable post-pair evidence per edge? | Yes | Yes |
+| Do you want to identify specific campaign groups? | Yes — Leiden communities | No — pairwise only |
 | Is speed a priority? | Slower (multi-stage) | Faster (single-stage) |
-| Do you want to explore broadly first? | No | Yes |
+| Is the dataset large and noisy? | Better precision | Better recall |
 
 Use `network_type="both"` to compute both in one run and compare.
 
