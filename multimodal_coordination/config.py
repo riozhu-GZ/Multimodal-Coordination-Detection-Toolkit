@@ -9,15 +9,22 @@ TEXT_BATCH_SIZE = 50
 IMAGE_BATCH_SIZE = 128
 
 # --- Time-window detection defaults ---
-DEFAULT_TIME_WINDOW = 3600           # 1 hour in seconds
+DEFAULT_TIME_WINDOW = 3600           # 1 hour in seconds (generic default)
 DEFAULT_ASY_MIN_TIME_WINDOW = 0      # minimum asymmetric window (0 = no lower bound)
 DEFAULT_TEXT_THRESHOLD = 0.9         # cosine similarity threshold for text
 DEFAULT_IMG_THRESHOLD = 0.8          # cosine similarity threshold for images
 DEFAULT_MIN_EDGE_WEIGHT = 1          # minimum coordination count to form an edge
 
+# --- TiCNet specific ---
+# TiCNet uses a strict 60-second window to detect synchronous CIB (accounts
+# posting visually identical images within seconds of each other).
+TICNET_TIME_WINDOW = 60              # 60 seconds — strict CIB detection
+TICNET_MEASURE_TYPE = "image_only"   # TiCNet detects by image similarity only
+
 # --- LiCNet specific ---
-LICNET_TIME_WINDOW = 60 * 60         # 1 hour
+LICNET_TIME_WINDOW = 60 * 60         # 1 hour — covers both CIB and async coordination
 LICNET_MIN_EDGE_WEIGHT = 5
+LICNET_MEASURE_TYPE = "image_only"   # LiCNet also detects by image similarity only
 
 # --- Community filtering defaults ---
 DEFAULT_MIN_COMMUNITY_SIZE = 3       # filter communities smaller than this

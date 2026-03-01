@@ -33,6 +33,9 @@ from .config import (
     DEFAULT_TIME_WINDOW,
     LICNET_MIN_EDGE_WEIGHT,
     LICNET_TIME_WINDOW,
+    LICNET_MEASURE_TYPE,
+    TICNET_TIME_WINDOW,
+    TICNET_MEASURE_TYPE,
     SIM_MULTIMODAL_DISJOINT,
     DEFAULT_CONTENT_COMMUNITY_MIN_SIZE,
     DEFAULT_EMBED_CLUSTER_MIN_SIZE,
@@ -191,7 +194,6 @@ def find_embed_clusters(
 def build_content_network(
     network: nx.Graph,
     tweet_df: pd.DataFrame,
-    text_embed_col: str = "text_emb_from_multi",
     image_embed_col: str = "image_embed",
     message_id_col: str = "id",
     username_col: str = "username",
@@ -199,33 +201,38 @@ def build_content_network(
     embed_cluster_min_size: int = DEFAULT_EMBED_CLUSTER_MIN_SIZE,
 ) -> Tuple[nx.Graph, nx.Graph]:
     """
-    Build a content-level network from the user coordination edges.
+    Build an image-content-level network from the user coordination edges.
 
-    Indexes content by the hash of concatenated (text + image) embeddings,
-    clusters similar content together, then retains only large connected
-    components.
+    Mirrors the original ``image_network_from_conetwork`` logic: nodes are
+    image identity keys (hash of the image embedding, analogous to image
+    filenames in the original), clustered by image similarity.  The filtered
+    large-component graph (``g_content_big``) retains:
+
+    * Nodes in connected components larger than ``user_community_min_size``, OR
+    * Nodes whose image was posted by more than 5 distinct users
+      (the "big_image_lst" in the original notebook).
 
     Parameters
     ----------
     network : nx.Graph
         User-level coordination graph (edges carry ``edges_message`` attribute).
     tweet_df : pd.DataFrame
-        DataFrame with post data including embedding columns and message IDs.
-    text_embed_col, image_embed_col : str
-        Column names for text and image embeddings.
+        DataFrame with post data including the image embedding column.
+    image_embed_col : str
+        Column name for image embeddings (numpy arrays or list).
     message_id_col, username_col : str
         Column name mappings.
     user_community_min_size : int
-        Minimum component size to retain.
+        Minimum connected-component size to retain.
     embed_cluster_min_size : int
-        Minimum cluster size for embedding clustering.
+        Minimum cluster size for image embedding clustering.
 
     Returns
     -------
     g_content : nx.Graph
-        Full content network (all components).
+        Full image-content network (all components).
     g_content_big : nx.Graph
-        Filtered content network (large components only).
+        Filtered image-content network (large components + popular images).
     """
     edges_df = pd.DataFrame(
         network.edges(data=True), columns=["Source", "Target", "Attributes"]
@@ -246,26 +253,25 @@ def build_content_network(
         subset=message_id_col
     ).copy()
 
-    # Hash of combined embedding as a content identity key
-    content_df["combine_embed"] = content_df.apply(
-        lambda r: np.concatenate([
-            np.array(r[text_embed_col]) if not isinstance(r[text_embed_col], np.ndarray) else r[text_embed_col],
-            np.array(r[image_embed_col]) if not isinstance(r[image_embed_col], np.ndarray) else r[image_embed_col],
-        ]),
-        axis=1,
-    )
-    content_df["embed_key"] = content_df["combine_embed"].apply(lambda e: hash(tuple(e)))
+    # Use image embedding hash as the content identity key (analogous to
+    # image filename in the original notebook).
+    def _to_array(v):
+        return np.array(v) if not isinstance(v, np.ndarray) else v
+
+    content_df["_img_arr"] = content_df[image_embed_col].apply(_to_array)
+    content_df["embed_key"] = content_df["_img_arr"].apply(lambda e: hash(tuple(e)))
 
     id_to_embed_key = content_df.set_index(message_id_col)["embed_key"].to_dict()
     author_dict = content_df.set_index(message_id_col)[username_col].to_dict()
     embed_keys = content_df["embed_key"].tolist()
-    embeddings = content_df["combine_embed"].tolist()
+    embeddings = content_df["_img_arr"].tolist()
 
+    # Cluster by image similarity (mirrors find_image_cluster in original)
     cluster_dict, _ = find_embed_clusters(
         embed_keys, embeddings, min_cluster_size=embed_cluster_min_size
     )
 
-    # Build content graph (nodes = content hashes, edges = co-post pairs)
+    # Build content graph (nodes = image-embed keys, edges = co-posted image pairs)
     embed_pairs = [
         (id_to_embed_key[pair[0]], id_to_embed_key[pair[1]])
         for pair in edge_pairs
@@ -293,14 +299,22 @@ def build_content_network(
         if ek in g_content.nodes:
             g_content.nodes[ek].update(_node_attrs(ek))
 
-    # Keep only large connected components
+    # Keep nodes in large connected components (> user_community_min_size)
     components = list(nx.connected_components(g_content))
-    large_nodes = {
+    large_comp_nodes = {
         node
         for comp in components
         if len(comp) > user_community_min_size
         for node in comp
     }
+
+    # Also keep nodes posted by > 5 distinct users (mirrors original big_image_lst)
+    big_content_nodes = {
+        ek for ek in g_content.nodes
+        if g_content.nodes[ek].get("user_count", 0) > 5
+    }
+
+    large_nodes = large_comp_nodes | big_content_nodes
 
     g_content_big = nx.Graph()
     for u, v, data in g_content.edges(data=True):
@@ -421,14 +435,13 @@ def compute_ticnet(
     db_path: str,
     tweet_df: pd.DataFrame,
     output_path: str,
-    time_window: int = DEFAULT_TIME_WINDOW,
+    time_window: int = TICNET_TIME_WINDOW,
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
     img_threshold: float = DEFAULT_IMG_THRESHOLD,
     min_edge_weight: int = DEFAULT_MIN_EDGE_WEIGHT,
-    measure_type: str = SIM_MULTIMODAL_DISJOINT,
+    measure_type: str = TICNET_MEASURE_TYPE,
     min_community_size: int = DEFAULT_MIN_COMMUNITY_SIZE,
     n_threads: int = DEFAULT_N_THREADS,
-    text_embed_col: str = "text_emb_from_multi",
     image_embed_col: str = "image_embed",
     message_id_col: str = "id",
     username_col: str = "username",
@@ -437,12 +450,16 @@ def compute_ticnet(
     """
     Compute the Tweet-image Coordination Network (TiCNet) and save as GraphML.
 
+    TiCNet detects synchronous Coordinated Inauthentic Behaviour (CIB): accounts
+    posting visually similar images within a tight time window (default 60 s).
+
     Pipeline:
-    1. Detect co-similar post pairs (time-windowed pairwise similarity).
-    2. Apply Leiden community detection; filter small communities.
-    3. Build content network (embedding-hash nodes).
-    4. Reconstruct a user network from content clusters (fully-connected cliques).
-    5. Compose the directed user edges from step 2 onto the user set from step 4.
+    1. Detect co-similar post pairs using image-only similarity within 60 s.
+    2. Apply Leiden community detection; filter communities smaller than
+       ``min_community_size``.
+    3. Build an image-content network (image-embedding-hash nodes).
+    4. Reconstruct a user network from image clusters (fully-connected cliques).
+    5. Compose the directed user edges from step 2 onto the clique node set.
     6. Write GraphML output.
 
     Parameters
@@ -450,23 +467,23 @@ def compute_ticnet(
     db_path : str
         Path to the initialised SQLite database.
     tweet_df : pd.DataFrame
-        Post DataFrame with embedding columns.
+        Post DataFrame with image embedding column.
     output_path : str
         Destination path for the TiCNet GraphML file.
     time_window : int
-        Time window in seconds for coordination detection.
+        Time window in seconds (default 60 — strict CIB detection).
     text_threshold, img_threshold : float
         Similarity thresholds (0–1).
     min_edge_weight : int
         Minimum co-similar pairs to form an edge.
     measure_type : str
-        Similarity measurement strategy.
+        Similarity measurement strategy (default ``'image_only'``).
     min_community_size : int
         Minimum Leiden community size to retain.
     n_threads : int
         Parallel workers for detection.
-    text_embed_col, image_embed_col : str
-        Embedding column names in ``tweet_df``.
+    image_embed_col : str
+        Image embedding column name in ``tweet_df``.
     message_id_col, username_col : str
         Column name mappings in ``tweet_df``.
     show_progress_bar : bool
@@ -510,7 +527,6 @@ def compute_ticnet(
 
     _, g_content_big = build_content_network(
         filtered, tweet_df,
-        text_embed_col=text_embed_col,
         image_embed_col=image_embed_col,
         message_id_col=message_id_col,
         username_col=username_col,
@@ -547,7 +563,7 @@ def compute_licnet(
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
     img_threshold: float = DEFAULT_IMG_THRESHOLD,
     min_edge_weight: int = LICNET_MIN_EDGE_WEIGHT,
-    measure_type: str = SIM_MULTIMODAL_DISJOINT,
+    measure_type: str = LICNET_MEASURE_TYPE,
     n_threads: int = DEFAULT_N_THREADS,
     show_progress_bar: bool = True,
 ) -> nx.DiGraph:

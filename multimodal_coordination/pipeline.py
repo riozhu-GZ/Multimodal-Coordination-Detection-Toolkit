@@ -18,13 +18,14 @@ from .config import (
     DEFAULT_MIN_EDGE_WEIGHT,
     DEFAULT_N_THREADS,
     DEFAULT_TEXT_THRESHOLD,
-    DEFAULT_TIME_WINDOW,
     LICNET_MIN_EDGE_WEIGHT,
     LICNET_TIME_WINDOW,
+    LICNET_MEASURE_TYPE,
+    TICNET_TIME_WINDOW,
+    TICNET_MEASURE_TYPE,
     NETWORK_BOTH,
     NETWORK_LICNET,
     NETWORK_TICNET,
-    SIM_MULTIMODAL_DISJOINT,
     VALID_NETWORK_TYPES,
 )
 from .database import generate_database_from_dataframe, initialise_multimodal_db
@@ -51,12 +52,12 @@ def detect_coordination(
     url_col: str = "url",
     # --- Network parameters ---
     network_type: str = NETWORK_BOTH,
-    time_window: int = DEFAULT_TIME_WINDOW,
+    time_window: int = TICNET_TIME_WINDOW,
     text_threshold: float = DEFAULT_TEXT_THRESHOLD,
     img_threshold: float = DEFAULT_IMG_THRESHOLD,
     min_edge_weight: int = DEFAULT_MIN_EDGE_WEIGHT,
     min_community_size: int = DEFAULT_MIN_COMMUNITY_SIZE,
-    measure_type: str = SIM_MULTIMODAL_DISJOINT,
+    measure_type: str = TICNET_MEASURE_TYPE,
     n_threads: int = DEFAULT_N_THREADS,
     # --- Internal ---
     db_path: Optional[str] = None,
@@ -133,8 +134,8 @@ def detect_coordination(
         - ``'both'``: compute both
 
     time_window : int
-        Maximum time gap in seconds between similar posts to count as coordinated.
-        Used for TiCNet (LiCNet uses a separate larger window by default).
+        Time window in seconds for TiCNet (default 60 s — strict CIB detection).
+        LiCNet always uses its own default window (3600 s).
 
     text_threshold : float
         Cosine similarity threshold for text (0–1). Default: 0.9.
@@ -150,9 +151,9 @@ def detect_coordination(
         Minimum community size retained after Leiden community detection (TiCNet only).
 
     measure_type : str
-        Similarity measurement strategy. One of:
-        ``'multimodal_disjoint'`` (text OR image), ``'text_only'``,
-        ``'image_only'``, ``'multimodal_joint'`` (concatenated).
+        Similarity measurement strategy. Default ``'image_only'`` matches the
+        original algorithm. Other options: ``'multimodal_disjoint'`` (text OR
+        image), ``'text_only'``, ``'multimodal_joint'`` (concatenated).
 
     n_threads : int
         Number of parallel worker processes for the detection step.
@@ -274,7 +275,6 @@ def detect_coordination(
                 measure_type=measure_type,
                 min_community_size=min_community_size,
                 n_threads=n_threads,
-                text_embed_col=text_embed_col,
                 image_embed_col=image_embed_col,
                 message_id_col=message_id_col,
                 username_col=username_col,

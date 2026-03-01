@@ -90,9 +90,9 @@ def run():
         # Both network types
         network_type="both",
 
-        # Parameters tuned for the small toy dataset
-        time_window=3600,       # 1-hour window
-        text_threshold=0.9,
+        # TiCNet: 60-second window for strict CIB detection (image_only by default)
+        # LiCNet always uses its own 1-hour window regardless of time_window here
+        time_window=60,
         img_threshold=0.8,
         min_edge_weight=1,
         min_community_size=2,
