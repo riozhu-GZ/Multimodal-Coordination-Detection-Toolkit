@@ -1,6 +1,6 @@
 # Multimodal Coordination Detection Toolkit
 
-A Python toolkit for detecting **multimodal coordinated inauthentic behaviour** on social media by identifying accounts that co-post similar images or multimodal content (text + images) within time windows. More details about multimodal coordinated inauthentic behaviour can be found in https://doi.org/10.5204/thesis.eprints.263305.
+A Python toolkit for detecting **multimodal coordinated online behaviour** on social media by identifying accounts that co-post similar images or multimodal content (text + images) within time windows. More details about multimodal coordinated online behaviour can be found in https://doi.org/10.5204/thesis.eprints.263305.
 
 The toolkit produces coordination networks as **GraphML files**, ready for analysis in Gephi.
 
