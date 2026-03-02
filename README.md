@@ -241,6 +241,3 @@ All parameters of `detect_coordination()` and their CLI equivalents:
 
 > **Reference:** Graham, T., Bruns, A., Zhu, G., & Campbell, H. (2024). *Coordination Network Toolkit*. Queensland University of Technology. [github.com/QUT-Digital-Observatory/coordination-network-toolkit](https://github.com/QUT-Digital-Observatory/coordination-network-toolkit)
 
-## License
-
-See [LICENSE](LICENSE).
